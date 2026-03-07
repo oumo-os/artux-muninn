@@ -1,0 +1,9 @@
+# Core (required)
+# No mandatory third-party deps — runs on stdlib only (SQLite, json, math, re)
+
+# Semantic embeddings (strongly recommended — dramatically improves recall quality)
+sentence-transformers>=2.2.0
+
+# Optional acceleration for sentence-transformers
+# torch>=2.0.0        # uncomment if you want GPU support
+# numpy>=1.24.0       # usually pulled in by sentence-transformers automatically

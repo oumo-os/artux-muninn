@@ -103,17 +103,80 @@ class MemoryAgent:
         topics: list[str] | None = None,
         concepts: list[str] | None = None,
         confidence: float = 1.0,
+        retain_tail: int = 3,
+        per_segment: bool = True,
     ) -> LTMEntry:
         """
-        Trigger LTM consolidation.
-        If `narrative` is None, compresses current STM and uses that.
+        Consolidate STM into LTM.
+
+        When called without an explicit narrative this method:
+
+          1. Splits STM raw segments into head (older) and tail (newest
+             `retain_tail` segments).
+          2. Compresses [existing consN + head] into a new consN narrative
+             and removes those segments from STM.  The tail raw segments
+             remain live — they are NOT flushed.
+          3. Optionally creates individual LTM entries for every raw head
+             segment (`per_segment=True`).  This gives every event its own
+             chance at LTM survival independent of whether the LLM compress_fn
+             chose to mention it in the narrative.
+          4. Stores one LTM entry for the compressed narrative (the "period"
+             entry).  This is the return value.
+
+        Parameters
+        ----------
+        retain_tail : int
+            Number of newest raw segments to leave live in STM after flush.
+            Default 3.  Set to 0 to flush everything.
+        per_segment : bool
+            If True (default), also write an individual LTM entry for each
+            raw head segment before they are removed from STM.
+            The per-segment entries use the raw segment text verbatim so
+            no detail can be silently dropped by the compression step.
+
+        If `narrative` is supplied explicitly, the STM is left untouched and
+        that narrative is stored directly (same behaviour as before).
         """
-        if narrative is None:
-            comp = self.stm.compress()
-            narrative = comp.content if comp else ""
+        if narrative is not None:
+            # Caller supplied the narrative — store it directly, don't touch STM.
+            return self.ltm.consolidate_from_stm(
+                narrative=narrative,
+                class_type=class_type,
+                entities=entities or [],
+                topics=topics or [],
+                concepts=concepts or [],
+                confidence=confidence,
+            )
+
+        # --- Auto-consolidation path ---
+
+        # Step 1 + 2: compress head, keep tail live
+        new_cons, head_segments = self.stm.compress_head(retain=retain_tail)
+
+        # Step 3: per-segment LTM entries for every flushed raw segment
+        if per_segment:
+            for seg in head_segments:
+                # Skip any compression segments that slipped through
+                if seg.is_compression:
+                    continue
+                self.ltm.consolidate_from_stm(
+                    narrative=seg.content,
+                    class_type=class_type,
+                    entities=entities or [],
+                    topics=topics or [],
+                    concepts=concepts or [],
+                    confidence=confidence,
+                )
+
+        # Step 4: one "period" LTM entry from the compressed narrative
+        period_narrative = new_cons.content if new_cons else ""
+        if not period_narrative:
+            # Nothing was compressed (all segments fit in tail) — store
+            # the current window as a best-effort narrative instead.
+            period_narrative = self.stm.get_window() or "(no content)"
 
         return self.ltm.consolidate_from_stm(
-            narrative=narrative,
+            narrative=period_narrative,
             class_type=class_type,
             entities=entities or [],
             topics=topics or [],

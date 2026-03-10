@@ -25,11 +25,33 @@ def _now() -> datetime:
 
 @dataclass
 class STMSegment:
-    """A single temporal snapshot in short-term memory."""
-    id: str = field(default_factory=_uid)
-    content: str = ""
-    timestamp: datetime = field(default_factory=_now)
-    is_compression: bool = False   # True → this is a consN summary
+    """
+    A single temporal event in short-term memory.
+
+    Generic fields
+    --------------
+    source      Who produced this event: "user" | "system" | "tool" | "sensor" | "agent"
+    event_type  What kind of event: "speech" | "tool_call" | "tool_result" | "sensor" |
+                "output" | "internal" | "" (unset = raw text segment)
+    payload     Structured JSON-serialisable dict for typed events.
+                For consN (is_compression=True) the payload carries:
+                  {"last_event_id": str, "event_count_folded": int}
+    confidence  Producer-assigned confidence in this event (0.0–1.0).
+
+    is_compression
+    --------------
+    Transitional flag.  True means this segment is the rolling consN narrative.
+    Equivalent to event_type="internal" + payload subtype "consN".
+    Both representations remain valid during migration.
+    """
+    id: str                     = field(default_factory=_uid)
+    content: str                = ""
+    timestamp: datetime         = field(default_factory=_now)
+    is_compression: bool        = False         # True → consN narrative
+    source: str                 = ""            # who produced this event
+    event_type: str             = ""            # what kind of event
+    payload: dict               = field(default_factory=dict)  # structured metadata
+    confidence: float           = 1.0           # producer-assigned confidence
 
 
 # ---------------------------------------------------------------------------

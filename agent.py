@@ -81,9 +81,32 @@ class MemoryAgent:
 
     # --- STM -----------------------------------------------------------
 
-    def record_stm(self, segment: str):
-        """Append a new temporal segment to Short-Term Memory."""
-        return self.stm.record(segment)
+    def record_stm(
+        self,
+        segment: str,
+        source: str = "",
+        event_type: str = "",
+        payload: Optional[dict] = None,
+        confidence: float = 1.0,
+    ):
+        """
+        Append a raw event to Short-Term Memory.
+
+        Parameters
+        ----------
+        segment     : Text content of the event.
+        source      : Who produced this event ("user", "system", "tool", "sensor", …).
+        event_type  : Category ("speech", "tool_call", "tool_result", "sensor", …).
+        payload     : Structured metadata dict for typed events.
+        confidence  : Producer confidence in this event (0.0–1.0).
+        """
+        return self.stm.record(
+            segment,
+            source=source,
+            event_type=event_type,
+            payload=payload,
+            confidence=confidence,
+        )
 
     def forget_stm(self, segment_id: str) -> None:
         """Remove a specific STM segment by ID."""
@@ -107,38 +130,37 @@ class MemoryAgent:
         per_segment: bool = True,
     ) -> LTMEntry:
         """
-        Consolidate STM into LTM.
+        Consolidate STM into LTM, then flush the consolidated events.
 
         When called without an explicit narrative this method:
 
-          1. Splits STM raw segments into head (older) and tail (newest
-             `retain_tail` segments).
-          2. Compresses [existing consN + head] into a new consN narrative
-             and removes those segments from STM.  The tail raw segments
-             remain live — they are NOT flushed.
-          3. Optionally creates individual LTM entries for every raw head
-             segment (`per_segment=True`).  This gives every event its own
-             chance at LTM survival independent of whether the LLM compress_fn
-             chose to mention it in the narrative.
-          4. Stores one LTM entry for the compressed narrative (the "period"
-             entry).  This is the return value.
+          1. Calls compress_head(retain_tail) — updates the consN narrative
+             to cover the head segments, marks its last_event_id bookmark.
+             Raw events are NOT deleted at this step.
+
+          2. Optionally writes one LTM entry per raw head segment
+             (per_segment=True, default).  This ensures every event has its
+             own LTM entry independent of what the compress_fn chose to keep
+             in its narrative — the "gecko on the wall" is preserved even if
+             the rolling summary doesn't mention it.
+
+          3. Writes one "period" LTM entry from the compressed narrative.
+
+          4. Calls flush_up_to(head[-1].id) — deletes the head raw events
+             and advances the flush_watermark.  The tail raw segments remain
+             live in STM.
+
+        If `narrative` is supplied explicitly, the STM is left entirely
+        untouched and that narrative is stored directly (same as before).
 
         Parameters
         ----------
         retain_tail : int
-            Number of newest raw segments to leave live in STM after flush.
-            Default 3.  Set to 0 to flush everything.
+            Number of newest raw segments to keep live after flush. Default 3.
         per_segment : bool
-            If True (default), also write an individual LTM entry for each
-            raw head segment before they are removed from STM.
-            The per-segment entries use the raw segment text verbatim so
-            no detail can be silently dropped by the compression step.
-
-        If `narrative` is supplied explicitly, the STM is left untouched and
-        that narrative is stored directly (same behaviour as before).
+            Write an individual LTM entry for each flushed raw segment.
         """
         if narrative is not None:
-            # Caller supplied the narrative — store it directly, don't touch STM.
             return self.ltm.consolidate_from_stm(
                 narrative=narrative,
                 class_type=class_type,
@@ -148,15 +170,12 @@ class MemoryAgent:
                 confidence=confidence,
             )
 
-        # --- Auto-consolidation path ---
-
-        # Step 1 + 2: compress head, keep tail live
+        # 1. Update consN with the head, get head segments back (not yet deleted)
         new_cons, head_segments = self.stm.compress_head(retain=retain_tail)
 
-        # Step 3: per-segment LTM entries for every flushed raw segment
+        # 2. Per-segment LTM entries for every flushed raw segment
         if per_segment:
             for seg in head_segments:
-                # Skip any compression segments that slipped through
                 if seg.is_compression:
                     continue
                 self.ltm.consolidate_from_stm(
@@ -165,17 +184,13 @@ class MemoryAgent:
                     entities=entities or [],
                     topics=topics or [],
                     concepts=concepts or [],
-                    confidence=confidence,
+                    confidence=seg.confidence if seg.confidence < 1.0 else confidence,
                 )
 
-        # Step 4: one "period" LTM entry from the compressed narrative
-        period_narrative = new_cons.content if new_cons else ""
-        if not period_narrative:
-            # Nothing was compressed (all segments fit in tail) — store
-            # the current window as a best-effort narrative instead.
-            period_narrative = self.stm.get_window() or "(no content)"
-
-        return self.ltm.consolidate_from_stm(
+        # 3. Period LTM entry from the compressed narrative
+        period_narrative = (new_cons.content if new_cons
+                            else self.stm.get_window() or "(no content)")
+        period_entry = self.ltm.consolidate_from_stm(
             narrative=period_narrative,
             class_type=class_type,
             entities=entities or [],
@@ -183,6 +198,34 @@ class MemoryAgent:
             concepts=concepts or [],
             confidence=confidence,
         )
+
+        # 4. Flush the head events now that LTM entries are written
+        if head_segments:
+            self.stm.flush_up_to(head_segments[-1].id)
+
+        return period_entry
+
+    def flush_stm_up_to(self, event_id: str) -> int:
+        """
+        Explicitly flush STM raw events up to and including `event_id`.
+
+        Use this when a separate consolidation agent (e.g. a background Logos
+        process) has already written its own LTM entries and just needs to
+        advance the flush cursor.
+
+        Returns the number of segments deleted.
+        """
+        return self.stm.flush_up_to(event_id)
+
+    def get_flush_watermark(self) -> Optional[str]:
+        """
+        Return the event_id of the last raw STM segment that was flushed,
+        or None if nothing has been flushed yet.
+
+        Useful for consolidation agents that need to resume from where they
+        left off across restarts.
+        """
+        return self.stm.get_flush_watermark()
 
     # --- Entities ------------------------------------------------------
 

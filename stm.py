@@ -1,47 +1,57 @@
 """
 stm.py — Short-Term Memory manager.
 
-Maintains a sliding window of temporal segments:
-    [consN ---- t1 ---- t2 ---- t3]
+Window layout:
+    [consN  ----  t1  ----  t2  ----  t3]
 
-Rolling compression (triggered by _maybe_compress):
-    When raw count hits max_segments, ALL raw segments + existing consN
-    are folded into a new consN.  This is the continuous awareness window —
-    older details fade naturally because the LLM compress_fn will deprioritise
-    them as new events dominate.
+Two independent operations — deliberately separated:
 
-LTM consolidation (compress_head):
-    Splits raw into head (older) and tail (newest N).  Only the head is
-    folded into consN and flushed.  The tail stays live as raw segments so
-    the most recent events retain their individual identity and aren't
-    silently absorbed into a narrative before the caller has had a chance
-    to inspect or persist them.
+compress() / compress_head()
+    Update the rolling consN narrative (and its last_event_id bookmark).
+    Raw events are NEVER deleted here.  The consN is intentionally lossy;
+    raw events remain as ground truth until explicitly flushed.
 
-    This prevents the "gecko on the wall" problem: an event 2 minutes ago
-    with high LTM relevance doesn't get buried in a compression just because
-    a lot happened afterward.
+flush_up_to(event_id)
+    Delete raw events up to and including the named event, then advance
+    the flush_watermark.  Call this only after LTM entries have been
+    durably written for those events.
+
+consolidate_ltm() in agent.py uses both in sequence:
+    1. compress_head(retain) → narrative + returns head segments
+    2. (caller writes LTM entries)
+    3. flush_up_to(head[-1].id) → delete flushed events, advance watermark
+
+This separation means:
+  • A lightweight agent can update consN frequently for context freshness
+    without touching the event log.
+  • A heavier consolidation agent can flush independently, on its own
+    schedule, after verifying LTM writes.
+  • Muninn is not aware of any specific agent architecture — the cursor
+    is generic (flush_watermark) and the flush call is a plain method.
 """
 
 from __future__ import annotations
+import json
 from datetime import datetime
 from typing import Callable, Optional
 
-from .db import Database, to_json, from_json
+from .db import Database
 from .models import STMSegment
 
 
-# Default: keep 10 raw segments before compressing
 DEFAULT_MAX_SEGMENTS = 10
+
+# stm_meta keys
+_KEY_WATERMARK = "flush_watermark"     # last event_id whose raw segment was deleted
 
 
 class STMManager:
     """
     Manages the Short-Term Memory store.
 
-    compress_fn: optional callable(list[str]) -> str
-        Receives a list of segment contents and returns a compressed
-        narrative.  If None, a simple concatenation is used (useful for
-        testing without an LLM).
+    compress_fn : callable(list[str]) -> str
+        Receives a list of text contents and returns a compressed narrative.
+        If None, a simple join is used (suitable for testing without an LLM).
     """
 
     def __init__(
@@ -50,35 +60,68 @@ class STMManager:
         max_segments: int = DEFAULT_MAX_SEGMENTS,
         compress_fn: Optional[Callable[[list[str]], str]] = None,
     ):
-        self.db = db
+        self.db           = db
         self.max_segments = max_segments
-        self.compress_fn = compress_fn or self._default_compress
+        self.compress_fn  = compress_fn or self._default_compress
 
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
 
-    def record(self, content: str) -> STMSegment:
-        """Append a new temporal segment and trigger compression if needed."""
-        seg = STMSegment(content=content)
+    def record(
+        self,
+        content: str,
+        source: str = "",
+        event_type: str = "",
+        payload: Optional[dict] = None,
+        confidence: float = 1.0,
+    ) -> STMSegment:
+        """
+        Append a new raw event and trigger consN update if needed.
+
+        Parameters
+        ----------
+        source      : Who produced this event ("user", "system", "tool", …).
+        event_type  : What kind of event ("speech", "tool_call", "sensor", …).
+        payload     : Structured metadata dict for typed events.
+        confidence  : Producer-assigned confidence (0.0–1.0).
+        """
+        seg = STMSegment(
+            content    = content,
+            source     = source,
+            event_type = event_type,
+            payload    = payload or {},
+            confidence = confidence,
+        )
         with self.db.connection() as conn:
             conn.execute(
-                "INSERT INTO stm_segments (id, content, timestamp, is_compression) "
-                "VALUES (?, ?, ?, ?)",
-                (seg.id, seg.content, seg.timestamp.isoformat(), 0),
+                "INSERT INTO stm_segments "
+                "(id, content, timestamp, is_compression, source, event_type, payload, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    seg.id,
+                    seg.content,
+                    seg.timestamp.isoformat(),
+                    0,
+                    seg.source,
+                    seg.event_type,
+                    json.dumps(seg.payload),
+                    seg.confidence,
+                ),
             )
         self._maybe_compress()
         return seg
 
     def forget(self, segment_id: str) -> None:
-        """Remove a specific segment from STM."""
+        """Remove a specific segment from STM by ID."""
         with self.db.connection() as conn:
             conn.execute("DELETE FROM stm_segments WHERE id = ?", (segment_id,))
 
     def clear(self) -> None:
-        """Wipe all STM segments (destructive — use with care)."""
+        """Wipe all STM segments and reset the watermark.  Use with care."""
         with self.db.connection() as conn:
             conn.execute("DELETE FROM stm_segments")
+            conn.execute("DELETE FROM stm_meta WHERE key = ?", (_KEY_WATERMARK,))
 
     # ------------------------------------------------------------------
     # Read
@@ -94,13 +137,11 @@ class STMManager:
 
     def get_window(self) -> str:
         """
-        Return the current STM window as a single narrative string:
-        [consN][t1][t2]…
-        Useful as context injection into an LLM prompt.
+        Return the current STM window as a formatted string for prompt injection:
+            [SUMMARY: …] [HH:MM:SS] t1 [HH:MM:SS] t2 …
         """
-        segments = self.get_all()
         parts = []
-        for seg in segments:
+        for seg in self.get_all():
             if seg.is_compression:
                 parts.append(f"[SUMMARY: {seg.content}]")
             else:
@@ -108,98 +149,128 @@ class STMManager:
         return "\n".join(parts)
 
     def count(self) -> int:
-        """Number of raw (non-compression) segments."""
+        """Number of raw (non-consN) segments currently in STM."""
         with self.db.connection() as conn:
             return conn.execute(
                 "SELECT COUNT(*) FROM stm_segments WHERE is_compression = 0"
             ).fetchone()[0]
 
+    def get_events_after(self, event_id: Optional[str]) -> list[STMSegment]:
+        """
+        Return raw events that arrived after the given event_id (by timestamp).
+        Pass None to get all raw events.
+        Useful for attention-gate agents that poll for new events to triage.
+        """
+        if event_id is None:
+            return self._get_raw_segments()
+        with self.db.connection() as conn:
+            ts_row = conn.execute(
+                "SELECT timestamp FROM stm_segments WHERE id = ?", (event_id,)
+            ).fetchone()
+            if not ts_row:
+                return self._get_raw_segments()
+            rows = conn.execute(
+                "SELECT * FROM stm_segments "
+                "WHERE is_compression = 0 AND timestamp > ? "
+                "ORDER BY timestamp ASC",
+                (ts_row["timestamp"],),
+            ).fetchall()
+        return [self._row_to_segment(r) for r in rows]
+
     # ------------------------------------------------------------------
-    # Compression
+    # Watermark
+    # ------------------------------------------------------------------
+
+    def get_flush_watermark(self) -> Optional[str]:
+        """
+        Return the event_id of the last raw segment that was flushed.
+        None means nothing has been flushed yet.
+        """
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM stm_meta WHERE key = ?", (_KEY_WATERMARK,)
+            ).fetchone()
+        return row["value"] if row else None
+
+    def flush_up_to(self, event_id: str) -> int:
+        """
+        Delete all raw segments up to and including `event_id` (by timestamp),
+        then advance the flush_watermark.
+
+        This is the only place raw events are deleted.
+        Call this only after LTM entries for those events have been written.
+
+        Returns the number of raw segments deleted.
+        """
+        with self.db.connection() as conn:
+            ts_row = conn.execute(
+                "SELECT timestamp FROM stm_segments WHERE id = ?", (event_id,)
+            ).fetchone()
+            if not ts_row:
+                return 0
+
+            target_ts = ts_row["timestamp"]
+
+            n = conn.execute(
+                "SELECT COUNT(*) FROM stm_segments "
+                "WHERE is_compression = 0 AND timestamp <= ?",
+                (target_ts,),
+            ).fetchone()[0]
+
+            conn.execute(
+                "DELETE FROM stm_segments "
+                "WHERE is_compression = 0 AND timestamp <= ?",
+                (target_ts,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO stm_meta (key, value) VALUES (?, ?)",
+                (_KEY_WATERMARK, event_id),
+            )
+
+        return n
+
+    # ------------------------------------------------------------------
+    # Compression  (consN update — no deletion)
     # ------------------------------------------------------------------
 
     def compress(self) -> Optional[STMSegment]:
         """
-        Rolling compression: fold ALL raw segments (plus existing consN) into
-        a new consN.  Called automatically by _maybe_compress.
+        Rolling consN update: fold ALL raw segments (+ existing consN) into
+        a new consN.  Raw events are NOT deleted.
 
+        Called automatically by _maybe_compress when the window fills up.
         Returns the new consN segment, or None if there were no raw segments.
         """
         raw = self._get_raw_segments()
         if not raw:
             return None
-
-        # Fold existing consN text into the new compression so no context is
-        # silently dropped between rolling cycles.
-        texts = self._prepend_existing_cons([s.content for s in raw])
-        summary = self.compress_fn(texts)
-        cons = STMSegment(content=summary, is_compression=True)
-
-        with self.db.connection() as conn:
-            conn.execute("DELETE FROM stm_segments WHERE is_compression = 1")
-            ids = tuple(s.id for s in raw)
-            conn.execute(
-                f"DELETE FROM stm_segments WHERE id IN ({','.join('?' * len(ids))})",
-                ids,
-            )
-            conn.execute(
-                "INSERT INTO stm_segments (id, content, timestamp, is_compression) "
-                "VALUES (?, ?, ?, ?)",
-                (cons.id, cons.content, cons.timestamp.isoformat(), 1),
-            )
-
-        return cons
+        return self._write_cons(raw)
 
     def compress_head(self, retain: int = 3) -> tuple[Optional[STMSegment], list[STMSegment]]:
         """
-        LTM-consolidation compression: compress the head (older raw segments)
-        while leaving the `retain` newest raw segments live in STM.
+        LTM-consolidation consN update: fold the head (older raw segments)
+        into a new consN, leave the `retain` newest raw segments untouched.
 
-        Layout before:  [consN?] [t1 t2 t3 … tN-retain | tN-retain+1 … tN]
-                                  ←————————— head ————→   ←——— tail ———→
-        Layout after:   [new_consN(old_consN+head)]  [tN-retain+1 … tN]
+        Raw events are NOT deleted here — call flush_up_to(head[-1].id) after
+        writing LTM entries for the head segments.
 
-        Parameters
-        ----------
-        retain : int
-            Number of newest raw segments to leave untouched in STM.
-            Defaults to 3. Pass 0 to flush everything (equivalent to compress()).
+        Layout before:  [consN?] [t1 … t(N-retain) | t(N-retain+1) … tN]
+                                  ←————— head ——————  ←—— tail ———→
+        Layout after:   [new_consN] [t(N-retain+1) … tN]   (all raw still present)
 
         Returns
         -------
         (new_consN, head_segments)
-            new_consN       — the new compression segment (None if head was empty)
-            head_segments   — the raw segments that were folded and removed
+            new_consN     — updated consN (None if head was empty)
+            head_segments — the raw segments included in the new consN
+                            (not yet deleted — caller decides when to flush)
         """
         raw = self._get_raw_segments()
-
         if retain >= len(raw):
-            # Everything fits in the tail — nothing to flush.
             return None, []
 
         head = raw[:-retain] if retain > 0 else raw[:]
-        # tail stays in STM untouched — we don't touch its rows at all
-
-        texts = self._prepend_existing_cons([s.content for s in head])
-        summary = self.compress_fn(texts)
-        new_cons = STMSegment(content=summary, is_compression=True)
-
-        with self.db.connection() as conn:
-            # Replace old consN
-            conn.execute("DELETE FROM stm_segments WHERE is_compression = 1")
-            # Remove only the head segments
-            ids = tuple(s.id for s in head)
-            conn.execute(
-                f"DELETE FROM stm_segments WHERE id IN ({','.join('?' * len(ids))})",
-                ids,
-            )
-            # Insert new consN
-            conn.execute(
-                "INSERT INTO stm_segments (id, content, timestamp, is_compression) "
-                "VALUES (?, ?, ?, ?)",
-                (new_cons.id, new_cons.content, new_cons.timestamp.isoformat(), 1),
-            )
-
+        new_cons = self._write_cons(head)
         return new_cons, head
 
     # ------------------------------------------------------------------
@@ -210,8 +281,48 @@ class STMManager:
         if self.count() >= self.max_segments:
             self.compress()
 
+    def _write_cons(self, head: list[STMSegment]) -> STMSegment:
+        """
+        Build a new consN from `head` (folding in the existing consN text),
+        write it to the DB, and return the new STMSegment.
+        Raw events in `head` are left untouched.
+        """
+        texts   = self._prepend_existing_cons([s.content for s in head])
+        summary = self.compress_fn(texts)
+
+        last_id = head[-1].id if head else ""
+        cons_payload = {
+            "last_event_id":     last_id,
+            "event_count_folded": len(head),
+        }
+        cons = STMSegment(
+            content        = summary,
+            is_compression = True,
+            event_type     = "internal",
+            payload        = cons_payload,
+        )
+
+        with self.db.connection() as conn:
+            conn.execute("DELETE FROM stm_segments WHERE is_compression = 1")
+            conn.execute(
+                "INSERT INTO stm_segments "
+                "(id, content, timestamp, is_compression, source, event_type, payload, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    cons.id,
+                    cons.content,
+                    cons.timestamp.isoformat(),
+                    1,
+                    cons.source,
+                    cons.event_type,
+                    json.dumps(cons.payload),
+                    cons.confidence,
+                ),
+            )
+        return cons
+
     def _get_raw_segments(self) -> list[STMSegment]:
-        """Return only raw (non-compression) segments, oldest → newest."""
+        """Return only raw (non-consN) segments, oldest → newest."""
         with self.db.connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM stm_segments "
@@ -221,7 +332,7 @@ class STMManager:
         return [self._row_to_segment(r) for r in rows]
 
     def _get_compression_segment(self) -> Optional[STMSegment]:
-        """Return the current consN, or None if there isn't one."""
+        """Return the current consN, or None if absent."""
         with self.db.connection() as conn:
             row = conn.execute(
                 "SELECT * FROM stm_segments WHERE is_compression = 1 LIMIT 1"
@@ -230,24 +341,30 @@ class STMManager:
 
     def _prepend_existing_cons(self, texts: list[str]) -> list[str]:
         """
-        Prepend the current consN content to `texts` so that rolling or
-        head compressions never silently discard the accumulated narrative.
+        Prepend the current consN text so rolling updates never silently
+        discard the accumulated narrative.
         """
         cons = self._get_compression_segment()
-        if cons:
-            return [cons.content] + texts
-        return texts
+        return ([cons.content] + texts) if cons else texts
 
     @staticmethod
     def _default_compress(texts: list[str]) -> str:
-        """Naive fallback: join all texts with separators."""
         return " | ".join(texts)
 
     @staticmethod
     def _row_to_segment(row) -> STMSegment:
+        raw_payload = row["payload"] if "payload" in row.keys() else "{}"
+        try:
+            payload = json.loads(raw_payload) if raw_payload else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
         return STMSegment(
-            id=row["id"],
-            content=row["content"],
-            timestamp=datetime.fromisoformat(row["timestamp"]),
-            is_compression=bool(row["is_compression"]),
+            id             = row["id"],
+            content        = row["content"],
+            timestamp      = datetime.fromisoformat(row["timestamp"]),
+            is_compression = bool(row["is_compression"]),
+            source         = row["source"]     if "source"     in row.keys() else "",
+            event_type     = row["event_type"] if "event_type" in row.keys() else "",
+            payload        = payload,
+            confidence     = row["confidence"] if "confidence" in row.keys() else 1.0,
         )

@@ -457,6 +457,15 @@ class MemoryAgent:
         """Pull an archived scar back into active LTM."""
         return self.ltm.rehydrate(archive_id)
 
+	def get_raw_events(self, after_id: Optional[str] = None, limit: int = 100) -> list[STMSegment]:
+	    """
+	    Return raw STM events after `after_id`, up to `limit`.
+	    Pass after_id=get_flush_watermark() to get only unprocessed events.
+	    """
+	    events = self.stm.get_events_after(after_id)
+	    return events[:limit]
+    
+    
     # ==================================================================
     # Debug / introspection
     # ==================================================================

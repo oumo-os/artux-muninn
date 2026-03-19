@@ -21,7 +21,7 @@ from .models import (
 from .stm import STMManager
 from .ltm import LTMManager
 from .entities import EntityManager
-from .recall import RecallEngine, RecallResult
+from .recall import RecallEngine, RecallResult, RecallQuery
 from .forgetting import ForgettingEngine
 from .sources import SourceManager
 
@@ -71,11 +71,22 @@ class MemoryAgent:
 
     # --- Recall --------------------------------------------------------
 
-    def recall(self, query: str, top_k: int = 10) -> list[RecallResult]:
+    def recall(self, query: "str | RecallQuery", top_k: int = 5) -> list[RecallResult]:
         """
-        Hybrid recall: structured + semantic.
-        Returns ranked RecallResult objects with provenance.
-        Each result includes any SourceRefs attached to the LTM entry.
+        Hybrid recall: structured signals + semantic similarity + association traversal.
+
+        Accepts either:
+          - A RecallQuery with explicit structured parameters (preferred when called
+            from a tool dispatcher — the LLM fills these in from its reasoning).
+          - A plain string, treated as semantic_query only (convenient for direct
+            programmatic use without an LLM in the loop).
+
+        Returns ranked RecallResult objects. Each result carries:
+          - entry        : the LTM entry
+          - score        : combined score
+          - match_reasons: which signals fired
+          - sources      : external assets (images, audio, etc.) linked to this entry
+          - from_archive : True if this result was hydrated from the scar store
         """
         return self.recall_engine.recall(query, top_k=top_k)
 
@@ -457,15 +468,6 @@ class MemoryAgent:
         """Pull an archived scar back into active LTM."""
         return self.ltm.rehydrate(archive_id)
 
-	def get_raw_events(self, after_id: Optional[str] = None, limit: int = 100) -> list[STMSegment]:
-	    """
-	    Return raw STM events after `after_id`, up to `limit`.
-	    Pass after_id=get_flush_watermark() to get only unprocessed events.
-	    """
-	    events = self.stm.get_events_after(after_id)
-	    return events[:limit]
-    
-    
     # ==================================================================
     # Debug / introspection
     # ==================================================================

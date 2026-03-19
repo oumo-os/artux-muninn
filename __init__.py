@@ -84,7 +84,7 @@ from .models import (
 )
 from .db import Database
 from .embeddings import SEMANTIC_AVAILABLE
-from .recall import RecallResult
+from .recall import RecallResult, RecallQuery
 
 __all__ = [
     # Primary interface
@@ -102,6 +102,7 @@ __all__ = [
     "ArchiveEntry",
     "SourceRef",
     "RecallResult",
+    "RecallQuery",
     # Low-level access
     "Database",
     # Feature flag

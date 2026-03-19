@@ -41,34 +41,86 @@ _TOOL_SPECS = [
     {
         "name": "recall",
         "description": (
-            "Search long-term memory using a natural language query. "
-            "Combines structured filtering (entity, topic, concept, time) "
-            "with semantic similarity. Returns the most relevant memory entries. "
-            "Use this when you need to retrieve facts, past events, or information "
-            "about a person or topic from previous interactions."
+            "Retrieve relevant Long-Term Memory entries. "
+            "Use structured parameters you have already reasoned about — "
+            "the memory module uses them directly for surgical precision. "
+            "All parameters are optional; provide whichever you know.\n\n"
+            "operator       — Cognitive frame: what / who / when / how / where / "
+            "why / dispute. Matches entries written with that concept triple.\n"
+            "subject        — Primary subject: a person's name, object, concept, "
+            "or an entity_id from a prior resolve_entity call.\n"
+            "topics         — Exact topic tags to match (same vocabulary used at write time).\n"
+            "semantic_query — Freeform natural language for embedding similarity. "
+            "Use for open questions or when unsure of the write-time vocabulary.\n"
+            "time_range     — Restrict to a window: {\"after\": \"YYYY-MM-DD\", "
+            "\"before\": \"YYYY-MM-DD\"}.\n"
+            "include_scars  — Also search faded/archived memories. "
+            "Scar results are clearly marked in the response."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
+                "operator": {
+                    "type": "string",
+                    "enum": ["what", "who", "when", "how", "where", "why", "dispute", "find"],
+                    "description": (
+                        "Cognitive frame. Use 'who' for identity/person queries, "
+                        "'what' for object/fact queries, 'where' for location, "
+                        "'when' for time, 'dispute' for conflicting information."
+                    ),
+                },
+                "subject": {
                     "type": "string",
                     "description": (
-                        "Natural language query. Optionally prefix with an operator "
-                        "(who / what / where / when / how / why / dispute) and use "
-                        "quoted phrases for exact topic matches. "
-                        "Supports after:YYYY-MM-DD and before:YYYY-MM-DD constraints. "
-                        "Examples: 'who is Musa', 'what does Musa do for work', "
-                        "'where was John after:2024-01-01'"
-                    )
+                        "Primary subject name or entity_id. "
+                        "Examples: 'John', 'kettle', 'entity-john-001'. "
+                        "Accepts a name (fuzzy-matched against entities) or a UUID "
+                        "entity_id from a prior resolve_entity call."
+                    ),
+                },
+                "topics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Exact topic tags to match against tags written at consolidation time. "
+                        "Use the same vocabulary you would use when writing. "
+                        "Example: ['lighting', 'preference', 'john']"
+                    ),
+                },
+                "semantic_query": {
+                    "type": "string",
+                    "description": (
+                        "Freeform natural language for vector similarity search. "
+                        "Use for open-ended questions or paraphrased concepts. "
+                        "Examples: 'what lighting does John prefer for movies', "
+                        "'ambient sound observations from the living room'"
+                    ),
+                },
+                "time_range": {
+                    "type": "object",
+                    "description": "Optional time bracket.",
+                    "properties": {
+                        "after":  {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                        "before": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                    },
+                },
+                "include_scars": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, also search the archive of faded/forgotten memories. "
+                        "Use when you suspect something was learned but may have decayed. "
+                        "Scar results are clearly marked in the response."
+                    ),
+                    "default": False,
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 5).",
-                    "default": 5
-                }
+                    "description": "Maximum results to return (default 5).",
+                    "default": 5,
+                },
             },
-            "required": ["query"]
-        }
+            "required": [],
+        },
     },
     {
         "name": "record_stm",
@@ -491,28 +543,51 @@ class ToolExecutor:
     # ------------------------------------------------------------------
 
     def _recall(self, inp: dict) -> str:
-        query = inp["query"]
-        top_k = inp.get("top_k", 5)
-        results = self.agent.recall(query, top_k=top_k)
+        from .recall import RecallQuery
+        from datetime import datetime
+
+        # Parse time_range if provided
+        tr     = inp.get("time_range") or {}
+        after  = datetime.strptime(tr["after"],  "%Y-%m-%d") if "after"  in tr else None
+        before = datetime.strptime(tr["before"], "%Y-%m-%d") if "before" in tr else None
+
+        q = RecallQuery(
+            operator       = inp.get("operator"),
+            subject        = inp.get("subject"),
+            topics         = inp.get("topics") or [],
+            semantic_query = inp.get("semantic_query"),
+            after          = after,
+            before         = before,
+            include_scars  = inp.get("include_scars", False),
+            top_k          = inp.get("top_k", 5),
+        )
+
+        results = self.agent.recall(q, top_k=q.top_k)
+
         if not results:
             return "No relevant memories found."
+
         lines = []
         for i, r in enumerate(results, 1):
+            archive_flag = " [FROM ARCHIVE — faded memory]" if r.from_archive else ""
             lines.append(
-                f"[{i}] (confidence={r.entry.confidence:.2f}, score={r.score:.2f})\n"
+                f"[{i}]{archive_flag}\n"
+                f"    confidence={r.entry.confidence:.2f}  score={r.score:.3f}\n"
                 f"    {r.entry.content}"
             )
             if r.match_reasons:
-                lines.append(f"    matched on: {', '.join(r.match_reasons)}")
+                lines.append(f"    matched via: {', '.join(r.match_reasons)}")
             if r.sources:
                 lines.append(f"    sources ({len(r.sources)}):")
                 for src in r.sources:
+                    needs_reexam = len(src.description) < 120
                     lines.append(
                         f"      [{src.type}] id={src.id}\n"
-                        f"        location: {src.location}\n"
-                        f"        captured: {src.captured_at.strftime('%Y-%m-%d %H:%M')}\n"
-                        f"        summary:  {src.description[:200]}"
-                        + (" [re-examine for more detail]" if len(src.description) < 80 else "")
+                        f"        location : {src.location}\n"
+                        f"        captured : {src.captured_at.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"        summary  : {src.description[:300]}"
+                        + ("\n        [consider re-examining source for more detail]"
+                           if needs_reexam else "")
                     )
         return "\n".join(lines)
 

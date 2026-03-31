@@ -33,24 +33,39 @@ class MemoryAgent:
     Parameters
     ----------
     db_path : str
-        Path to the SQLite database file.
+        Path to the SQLite database file.  Use ":memory:" for an in-process
+        database (useful for testing).
     compress_fn : callable, optional
-        Function(list[str]) -> str used to summarise STM segments.
-        Pass your LLM call here for AI-quality compression.
-        Defaults to a simple join (useful for testing).
+        Function(list[str]) -> str used to summarise STM segments into the
+        rolling consN narrative.  Pass your LLM call here for AI-quality
+        compression.  Defaults to a simple join (fine for testing).
     max_stm_segments : int
-        Number of raw STM segments before auto-compression fires.
+        Number of raw STM segments before auto-compression fires (default 10).
     decay_lambda : float
-        Controls how fast LTM confidence decays (higher = faster).
+        Controls how fast LTM confidence decays (higher = faster; default 0.01,
+        ~50 % decay in 70 days).
+    embedding_model_path : str, optional
+        Path to a GGUF file for llama-cpp-python embeddings.  Takes priority
+        over the MUNINN_EMBEDDING_MODEL environment variable and
+        sentence-transformers.  Example: "/models/nomic-embed-text.Q8_0.gguf"
+    n_gpu_layers : int
+        GPU layers for the llama-cpp embedding model.  0 = CPU only (default),
+        -1 = all layers on GPU.  Ignored when not using llama-cpp-python.
     """
 
     def __init__(
         self,
-        db_path: str = "memory.db",
-        compress_fn: Optional[Callable[[list[str]], str]] = None,
-        max_stm_segments: int = 10,
-        decay_lambda: float = 0.01,
+        db_path:              str                              = "memory.db",
+        compress_fn:          Optional[Callable[[list[str]], str]] = None,
+        max_stm_segments:     int                             = 10,
+        decay_lambda:         float                           = 0.01,
+        embedding_model_path: Optional[str]                  = None,
+        n_gpu_layers:         int                             = 0,
     ):
+        # Configure embedding backend before anything touches embed()
+        from .embeddings import configure as _cfg_embed
+        _cfg_embed(model_path=embedding_model_path, n_gpu_layers=n_gpu_layers)
+
         self.db = Database(db_path)
         self.ltm = LTMManager(self.db)
         self.entities = EntityManager(self.db)
@@ -474,23 +489,25 @@ class MemoryAgent:
 
     def status(self) -> dict:
         """Return a snapshot of current memory state."""
-        ltm_all = self.ltm.get_all()
-        archive = self.ltm.get_archive()
+        from .embeddings import backend_info
+        ltm_all     = self.ltm.get_all()
+        archive     = self.ltm.get_archive()
         all_sources = self.sources.all()
         return {
-            "stm_segments": self.stm.count(),
-            "ltm_entries": len(ltm_all),
+            "stm_segments":      self.stm.count(),
+            "ltm_entries":       len(ltm_all),
             "ltm_avg_confidence": (
                 sum(e.confidence for e in ltm_all) / len(ltm_all)
                 if ltm_all else 0.0
             ),
-            "entities": len(self.entities.all()),
-            "archive_scars": len(archive),
+            "entities":          len(self.entities.all()),
+            "archive_scars":     len(archive),
+            "embedding_backend": backend_info(),
             "sources": {
-                "total": len(all_sources),
+                "total":   len(all_sources),
                 "by_type": {
                     t: sum(1 for s in all_sources if s.type == t)
                     for t in set(s.type for s in all_sources)
-                }
-            }
+                },
+            },
         }

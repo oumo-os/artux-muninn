@@ -1,9 +1,23 @@
-# Core (required)
-# No mandatory third-party deps — runs on stdlib only (SQLite, json, math, re)
+# Core — no mandatory third-party deps (pure Python + SQLite stdlib)
 
-# Semantic embeddings (strongly recommended — dramatically improves recall quality)
-sentence-transformers>=2.2.0
+# Embedding backends (install one for meaningful semantic recall)
+# Priority: llama-cpp-python → sentence-transformers → TF-IDF fallback
 
-# Optional acceleration for sentence-transformers
-# torch>=2.0.0        # uncomment if you want GPU support
-# numpy>=1.24.0       # usually pulled in by sentence-transformers automatically
+# Option A — llama-cpp-python + local GGUF (recommended for local/offline use)
+#   Any GGUF embedding model works.  Good choices:
+#     nomic-embed-text-v1.5  (768-dim, strong general-purpose)
+#     mxbai-embed-large-v1   (1024-dim, high accuracy)
+#     bge-small-en-v1.5      (384-dim, fast)
+#   CPU:
+# llama-cpp-python
+#   GPU (CUDA):
+# CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+#   GPU (Metal / Apple Silicon):
+# CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+#
+#   Then set the model path (pick one):
+#     export MUNINN_EMBEDDING_MODEL=/path/to/model.gguf
+#     agent = MemoryAgent("agent.db", embedding_model_path="/path/to/model.gguf")
+
+# Option B — sentence-transformers (downloads ~80 MB model on first use)
+# sentence-transformers>=2.2.0

@@ -144,14 +144,57 @@ agent.store_ltm(
 ```bash
 git clone https://github.com/oumo-os/artux-muninn
 cd artux-muninn
-pip install -r requirements.txt
 ```
 
-For semantic recall quality (strongly recommended — makes the semantic signal meaningful):
+Muninn has no mandatory third-party dependencies — it runs on pure Python and SQLite. Install an embedding backend for meaningful semantic recall:
+
+### Option A — llama-cpp-python + local GGUF (recommended)
+
+Any GGUF embedding model works. Good choices:
+
+| Model | Dims | Notes |
+|---|---|---|
+| `nomic-embed-text-v1.5` | 768 | Strong general-purpose, widely available |
+| `mxbai-embed-large-v1` | 1024 | High accuracy |
+| `bge-small-en-v1.5` | 384 | Fast, low memory |
+| `all-MiniLM-L6-v2` | 384 | Widely available |
+
+```bash
+# CPU
+pip install llama-cpp-python
+
+# GPU — CUDA
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+
+# GPU — Apple Silicon
+CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
+```
+
+Then point Muninn at the model — either via environment variable (picked up automatically by every agent):
+
+```bash
+export MUNINN_EMBEDDING_MODEL=/models/nomic-embed-text-v1.5.Q8_0.gguf
+```
+
+Or per-agent in code:
+
+```python
+agent = MemoryAgent("agent.db",
+                    embedding_model_path="/models/nomic-embed-text-v1.5.Q8_0.gguf",
+                    n_gpu_layers=-1)    # -1 = all layers on GPU, 0 = CPU only
+```
+
+### Option B — sentence-transformers
+
+Downloads `all-MiniLM-L6-v2` (~80 MB) on first use:
 
 ```bash
 pip install sentence-transformers
 ```
+
+### No embedding library
+
+Muninn falls back to a TF-IDF bag-of-words vector. Structural signals (topics, entity references, concept triples) still work fully. Semantic similarity will not bridge vocabulary gaps — see the Betty scenario in the Recall section for why that matters.
 
 ---
 

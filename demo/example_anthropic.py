@@ -4,8 +4,18 @@ example_anthropic.py — Full agent loop using memory tools with Claude.
 Run:
     pip install anthropic
     export ANTHROPIC_API_KEY=sk-...
-    python example_anthropic.py
+    python demo/example_anthropic.py
 """
+
+import sys
+from pathlib import Path
+
+_DEMO_DIR   = Path(__file__).resolve().parent
+_STANDALONE = _DEMO_DIR.parent
+sys.path.insert(0, str(_STANDALONE))
+sys.path.insert(0, str(_DEMO_DIR))
+from _bootstrap import ensure_memory_module
+ensure_memory_module(_STANDALONE)
 
 import anthropic
 from memory_module import MemoryAgent

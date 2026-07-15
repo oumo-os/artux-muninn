@@ -79,6 +79,23 @@ class LTMManager:
         with self.db.connection() as conn:
             conn.execute("DELETE FROM ltm_entries WHERE id = ?", (entry_id,))
 
+    def update_content(
+        self,
+        entry_id: str,
+        new_content: str,
+        confidence: float | None = None,
+    ) -> bool:
+        """Update an LTM entry's content and re-embed it."""
+        entry = self.get(entry_id)
+        if entry is None:
+            return False
+        entry.content = new_content
+        entry.embedding = embed(new_content)
+        if confidence is not None:
+            entry.confidence = max(0.0, min(1.0, confidence))
+        self.store(entry)
+        return True
+
     # ------------------------------------------------------------------
     # Consolidation
     # ------------------------------------------------------------------

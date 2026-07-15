@@ -483,6 +483,19 @@ class MemoryAgent:
         """Pull an archived scar back into active LTM."""
         return self.ltm.rehydrate(archive_id)
 
+    def update_ltm_content(
+        self,
+        entry_id: str,
+        new_content: str,
+        confidence: float | None = None,
+    ) -> bool:
+        """Update an LTM entry's content and re-embed it."""
+        return self.ltm.update_content(entry_id, new_content, confidence)
+
+    def get_ltm_entry(self, entry_id: str) -> Optional[LTMEntry]:
+        """Fetch a single LTM entry by ID."""
+        return self.ltm.get(entry_id)
+
     # ==================================================================
     # Debug / introspection
     # ==================================================================

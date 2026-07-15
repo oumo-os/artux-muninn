@@ -100,8 +100,13 @@ if not USE_LOCAL_WHISPER:
     except ImportError:
         _require("openai", "pip install openai  # or: pip install faster-whisper")
 
-# Memory module (must be in PYTHONPATH or same parent directory)
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Memory module
+_DEMO_DIR   = Path(__file__).resolve().parent
+_STANDALONE = _DEMO_DIR.parent
+sys.path.insert(0, str(_STANDALONE))
+sys.path.insert(0, str(_DEMO_DIR))
+from _bootstrap import ensure_memory_module
+ensure_memory_module(_STANDALONE)
 from memory_module import MemoryAgent, get_tools, ToolExecutor
 
 

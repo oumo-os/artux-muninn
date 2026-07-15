@@ -579,13 +579,30 @@ memory_module/
 ├── forgetting.py          # Confidence decay, maintenance, reinforcement
 ├── embeddings.py          # sentence-transformers with TF-IDF fallback
 ├── sources.py             # Source references: register, attach, retrieve
-├── example.py             # Full lifecycle walkthrough (no LLM required)
-├── example_anthropic.py   # Anthropic agent loop with memory tools
-├── example_openai.py      # OpenAI agent loop with memory tools
-├── demo_live.py           # Live perceptual agent (cloud: Anthropic + Whisper)
-├── demo_local.py          # Live perceptual agent (local: faster-whisper + Ollama)
-├── demo_moonshine.py      # Live perceptual agent (offline: Moonshine ONNX + SmolVLM + Ollama)
-└── requirements.txt
+├── requirements.txt
+├── demo/                  # Demo scripts
+│   ├── _bootstrap.py          # Synthetic package registration for standalone use
+│   ├── text_utils.py          # Text loading utilities
+│   ├── xml_parser.py          # Tool-call parser for small LLMs
+│   ├── demo_chat_agent.py     # Chat agent with RAG vs Muninn toggle (Ollama)
+│   ├── demo_function_calling.py  # LLM agent with memory tools via function calling
+│   ├── demo_unaware_importer.py  # Agent that "hears" a book as user messages
+│   ├── demo_live.py           # Live perceptual agent (cloud: Anthropic + Whisper)
+│   ├── demo_local.py          # Live perceptual agent (local: faster-whisper + Ollama)
+│   ├── demo_moonshine.py      # Live perceptual agent (offline: Moonshine ONNX + SmolVLM)
+│   ├── example.py             # Full lifecycle walkthrough (no LLM required)
+│   ├── example_anthropic.py   # Anthropic agent loop with memory tools
+│   └── example_openai.py      # OpenAI agent loop with memory tools
+└── tests/                 # Test suite
+    ├── conftest.py              # Pytest config + fixtures
+    ├── test_memory_standalone.py    # Unit + integration tests (173 tests)
+    ├── test_memory_recording.py     # Recording correctness tests (92 tests)
+    ├── test_memory_accuracy.py      # Accuracy tests (44 tests)
+    ├── test_memory_accuracy_bench.py  # Accuracy benchmarks (31 tests)
+    ├── test_memory_bench.py         # Performance benchmarks (33 tests)
+    ├── test_demo_chat_agent.py      # Paired tests for demo_chat_agent
+    ├── test_function_calling_recall.py  # Automated recall QA battery
+    └── The Republic of Pluto.txt    # Test data (Plato's Republic)
 ```
 
 ---
@@ -784,4 +801,4 @@ Huginn agents interact with Muninn exclusively through `MemoryAgent`'s public AP
 
 ## License
 
-MIT
+Mozilla Public License 2.0

@@ -106,7 +106,12 @@ except ImportError:
     sys.exit(1)
 
 # Memory module
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_DEMO_DIR   = Path(__file__).resolve().parent
+_STANDALONE = _DEMO_DIR.parent
+sys.path.insert(0, str(_STANDALONE))
+sys.path.insert(0, str(_DEMO_DIR))
+from _bootstrap import ensure_memory_module
+ensure_memory_module(_STANDALONE)
 from memory_module import MemoryAgent, get_tools, ToolExecutor
 from memory_module.embeddings import SEMANTIC_AVAILABLE
 

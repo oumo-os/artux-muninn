@@ -4,8 +4,18 @@ example_openai.py — Full agent loop using memory tools with GPT-4o.
 Run:
     pip install openai
     export OPENAI_API_KEY=sk-...
-    python example_openai.py
+    python demo/example_openai.py
 """
+
+import sys
+from pathlib import Path
+
+_DEMO_DIR   = Path(__file__).resolve().parent
+_STANDALONE = _DEMO_DIR.parent
+sys.path.insert(0, str(_STANDALONE))
+sys.path.insert(0, str(_DEMO_DIR))
+from _bootstrap import ensure_memory_module
+ensure_memory_module(_STANDALONE)
 
 import json
 from openai import OpenAI

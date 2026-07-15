@@ -1,8 +1,18 @@
 """
 example.py — Demonstrates the full Memory Module lifecycle.
 
-Run with:  python example.py
+Run with:  python demo/example.py
 """
+
+import sys
+from pathlib import Path
+
+_DEMO_DIR   = Path(__file__).resolve().parent
+_STANDALONE = _DEMO_DIR.parent
+sys.path.insert(0, str(_STANDALONE))
+sys.path.insert(0, str(_DEMO_DIR))
+from _bootstrap import ensure_memory_module
+ensure_memory_module(_STANDALONE)
 
 from memory_module import MemoryAgent
 

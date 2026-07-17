@@ -44,7 +44,9 @@ flowchart TD
     K --> P[Semantic Similarity]
     
     L & M & N & O & P --> Q[Ranked Results]
-    Q --> R[Scar Hydration]
+    R[Scar Hydration] <--> Q
+    Q --> S[LTM Entries]
+    S --> J
 ```
 Raw STM events are never deleted by compression. They stay as ground truth until a consolidation agent explicitly flushes them after verifying their LTM entries are written. This separation makes Muninn safe for multi-agent use — a reasoning agent can update its rolling narrative without racing a background consolidation agent's flush pass.
 

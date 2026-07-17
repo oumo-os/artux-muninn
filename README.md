@@ -22,7 +22,30 @@ Perception → STM (raw events + consN) → [consolidation] → LTM
                                           (concept · entity · association
                                            · topic · semantic · scar)
 ```
-
+```mermaid
+flowchart TD
+    A[Perception Events] --> B[STM - Short-Term Memory]
+    B --> C[consN Rolling Narrative]
+    B --> D[Raw Events Ground Truth]
+    
+    C --> E[Logos Consolidation]
+    D --> E
+    
+    E --> F[LTM - Long-Term Memory]
+    F --> G[Entity Ledgers]
+    F --> H[Concept Triples]
+    F --> I[Topics & Associations]
+    
+    J[RecallQuery] --> K[Multi-Signal Engine]
+    K --> L[Concept Tier]
+    K --> M[Entity Resolution]
+    K --> N[Association Traversal]
+    K --> O[Topic Exact Match]
+    K --> P[Semantic Similarity]
+    
+    L & M & N & O & P --> Q[Ranked Results]
+    Q --> R[Scar Hydration]
+```
 Raw STM events are never deleted by compression. They stay as ground truth until a consolidation agent explicitly flushes them after verifying their LTM entries are written. This separation makes Muninn safe for multi-agent use — a reasoning agent can update its rolling narrative without racing a background consolidation agent's flush pass.
 
 ---

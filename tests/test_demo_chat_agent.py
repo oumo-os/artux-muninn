@@ -18,12 +18,13 @@ import pytest
 
 # ─── Bootstrap memory_module ──────────────────────────────────────────────────
 _STANDALONE_ROOT = str(Path(__file__).resolve().parent.parent)
+_DEMO_DIR = str(Path(__file__).resolve().parent.parent / "demo")
 sys.path.insert(0, _STANDALONE_ROOT)
+sys.path.insert(0, _DEMO_DIR)
 
 from memory_module import MemoryAgent, RecallQuery
 
 # Import the chat agent modules
-sys.path.insert(0, _STANDALONE_ROOT)
 from demo_chat_agent import load_and_chunk_text, ContextRAG, MuninnRAG, Config
 
 

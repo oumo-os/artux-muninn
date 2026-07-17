@@ -40,6 +40,7 @@ from typing import Optional
 
 _TESTS_DIR  = Path(__file__).resolve().parent
 _STANDALONE = _TESTS_DIR.parent
+_DEMO_DIR   = _STANDALONE / "demo"
 _MODELS_DIR  = Path(os.environ.get("MODELS_DIR", r"M:\Dev\projects\models"))
 
 # Set embedding model before ANY memory_module import
@@ -49,6 +50,7 @@ os.environ.setdefault(
 )
 
 sys.path.insert(0, str(_STANDALONE))
+sys.path.insert(0, str(_DEMO_DIR))
 sys.path.insert(0, str(_TESTS_DIR))
 
 from _bootstrap import ensure_memory_module

@@ -83,6 +83,13 @@ def configure(
     """
     global _backend, _llama_model, _st_model, SEMANTIC_AVAILABLE
 
+    # Allow callers / CI to force a specific backend and skip model loading.
+    forced = os.environ.get("MUNINN_EMBEDDING_BACKEND", "").lower()
+    if forced in ("tfidf", "skip"):
+        _backend           = "tfidf"
+        SEMANTIC_AVAILABLE = False
+        return "tfidf"
+
     # ── Try llama-cpp-python ────────────────────────────────────────────
     resolved_path = model_path or os.environ.get("MUNINN_EMBEDDING_MODEL")
 
@@ -130,9 +137,9 @@ def configure(
     return "tfidf"
 
 
-# Run the auto-configure on module import so callers don't have to.
-# If the user calls configure() explicitly, it overrides this.
-configure()
+# Auto-configure deferred to first embed() call so that importing the
+# module does not eagerly load sentence-transformers / torch.
+_configured = False
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +148,10 @@ configure()
 
 def embed(text: str) -> list[float]:
     """Return a normalised embedding vector for `text`."""
+    global _configured
+    if not _configured:
+        configure()
+        _configured = True
     if _backend == "llamacpp":
         return _llamacpp_embed(text)
     if _backend == "transformers":
